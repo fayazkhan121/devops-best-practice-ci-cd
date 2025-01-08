@@ -1,0 +1,87 @@
+trigger:
+  branches:
+    include:
+      - main  # or any branch you’d like to trigger on
+
+# Use the latest Ubuntu image for the build agent
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Modify these variables per your environment
+  acrName: 'YourACRName'                   # The name of your Azure Container Registry (without .azurecr.io)
+  dockerRepository: 'my-app'               # The name of your Docker repo in ACR
+  imageTag: '$(Build.BuildId)'             # Unique tag per build
+  chartName: 'helm'                        # Location of your Helm chart folder
+  releaseName: 'myapp-release'             # Helm release name
+  namespace: 'default'                     # Kubernetes namespace
+
+stages:
+# ------------------------------------------------------------------------------
+# STAGE 1: BUILD & PUSH DOCKER IMAGE
+# ------------------------------------------------------------------------------
+- stage: Build
+  displayName: Build & Push Docker Image
+  jobs:
+    - job: BuildAndPush
+      displayName: BuildAndPush
+      steps:
+        - checkout: self
+
+        # Login to Azure Container Registry
+        - task: Docker@2
+          displayName: "Build and Push Docker Image to ACR"
+          inputs:
+            containerRegistry: '<YOUR_ACR_SERVICE_CONNECTION>'
+            repository: '$(dockerRepository)'
+            command: 'buildAndPush'
+            Dockerfile: 'Dockerfile'       # Path to your Dockerfile
+            tags: |
+              $(imageTag)
+
+# ------------------------------------------------------------------------------
+# STAGE 2: DEPLOY TO AKS WITH HELM
+# ------------------------------------------------------------------------------
+- stage: Deploy
+  displayName: Deploy to AKS via Helm
+  dependsOn: Build
+  condition: succeeded()  # only run if previous stage is successful
+  jobs:
+    - deployment: HelmDeploy
+      displayName: Helm Deploy
+      environment: 'staging'    # or use 'production' or any environment name
+      pool:
+        vmImage: 'ubuntu-latest'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              # 1) Azure CLI step to login to ACR if needed
+              - task: AzureCLI@2
+                displayName: "AKS Login with Azure CLI"
+                inputs:
+                  azureSubscription: '<YOUR_AZURE_SUBSCRIPTION_SERVICE_CONNECTION>'
+                  scriptType: 'bash'
+                  scriptLocation: 'inlineScript'
+                  inlineScript: |
+                    echo "Logging into ACR..."
+                    az acr login --name $(acrName)
+
+              # 2) Helm task to deploy the chart
+              - task: HelmDeploy@0
+                displayName: "Deploy Helm Chart to AKS"
+                inputs:
+                  connectionType: 'Azure Resource Manager'
+                  azureSubscription: '<YOUR_AZURE_SUBSCRIPTION_SERVICE_CONNECTION>'
+                  azureResourceGroup: '<YOUR_AKS_RESOURCE_GROUP>'
+                  kubernetesCluster: '<YOUR_AKS_CLUSTER_NAME>'
+                  namespace: '$(namespace)'
+                  command: 'upgrade'
+                  releaseName: '$(releaseName)'
+                  chartType: 'FilePath'
+                  chartPath: '$(chartName)'
+                  valueFile: '$(chartName)/values.yaml'
+                  overrideValues: |
+                    image.repository=$(acrName).azurecr.io/$(dockerRepository)
+                    image.tag=$(imageTag)
+                  install: true
