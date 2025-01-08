@@ -1,0 +1,10 @@
+replicaCount: 1
+
+image:
+  repository: your-repository
+  pullPolicy: Always
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
